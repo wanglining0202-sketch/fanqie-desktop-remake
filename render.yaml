@@ -1,0 +1,12 @@
+# Render Blueprint — 自动部署配置
+# 连接 GitHub 后 Render 自动读取此文件
+services:
+  - type: web
+    name: fanqie-api
+    runtime: python
+    plan: free
+    buildCommand: pip install flask requests
+    startCommand: python api_server.py --port 8080
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
