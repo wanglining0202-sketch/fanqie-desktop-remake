@@ -576,57 +576,53 @@ function startDownloadProgress(book, totalChapters, label) {
 
 async function simulateDownload(book) {
   const totalCh = book.chapterCount || book.chapters?.length || 0;
-  const { record, updateProgress } = startDownloadProgress(book, totalCh, "下载");
-
-  const dlPromise = apiPost(`/api/book/${book.id}/download`, {
-    outputDir: state.defaultDir,
-  });
-
-  const timer = setInterval(updateProgress, 1000);
-  const result = await dlPromise;
-  clearInterval(timer);
-
-  if (result.success) {
-    record.status = "完成";
-    record.filePath = result.path;
-    record.message = `已保存: ${result.path} [${result.method || ""}]`;
-    toastTask(book.title, `下载完成 · ${(result.cn_chars || 0).toLocaleString()} 字 · ${result.downloaded || ""}/${result.total_chapters || ""}章`, 100, "完成");
-  } else {
-    record.status = "失败";
-    record.message = result.attempts
-      ? (result.suggestion || Object.values(result.attempts).join(" | "))
-      : (result.error || "下载失败");
-    toastTask(book.title, result.suggestion || result.error || "下载失败", 0, "失败");
-  }
-  persist();
+  const record = {
+    id: book.id, title: book.title, author: book.author,
+    format: state.format,
+    time: new Date().toLocaleString("zh-CN", { hour12: false }),
+    status: "下载中", message: "已提交任务...",
+  };
+  state.history.unshift(record);
   renderHistory();
+  toastTask(book.title, "已提交下载任务", 5, "排队中");
+
+  // 提交异步任务
+  const submit = await apiPost(`/api/book/${book.id}/download`, { outputDir: state.defaultDir });
+  if (submit.error || !submit.task_id) {
+    record.status = "失败"; record.message = submit.error || "提交失败";
+    toastTask(book.title, submit.error || "提交失败", 0, "失败");
+    persist(); renderHistory(); return;
+  }
+
+  const taskId = submit.task_id;
+  record.message = `任务 ${taskId}：下载中...`;
+
+  // 轮询任务状态
+  const poll = setInterval(async () => {
+    const task = await api(`/api/task/${taskId}`);
+    if (!task || task.error) return;
+
+    const pct = task.total ? Math.round(task.progress / task.total * 100) : 0;
+    toastTask(book.title, `任务 ${taskId}：${task.status} ${pct}%`, Math.min(98, pct || 5), task.status);
+
+    if (task.status === "completed") {
+      clearInterval(poll);
+      record.status = "完成";
+      record.filePath = task.result?.path;
+      record.message = `已保存: ${task.result?.path || ""} [${task.result?.downloaded || "?"}/${task.result?.total_chapters || "?"}章]`;
+      toastTask(book.title, `下载完成 · ${(task.result?.cn_chars || 0).toLocaleString()} 字`, 100, "完成");
+      persist(); renderHistory();
+    } else if (task.status === "failed") {
+      clearInterval(poll);
+      record.status = "失败";
+      record.message = task.result?.error || "下载失败";
+      toastTask(book.title, task.result?.error || "下载失败", 0, "失败");
+      persist(); renderHistory();
+    }
+  }, 2000);
 }
 
-async function downloadFanqieDirect(book) {
-  const totalCh = book.chapterCount || book.chapters?.length || 0;
-  const { record, updateProgress } = startDownloadProgress(book, totalCh, "番茄直链");
-
-  const dlPromise = apiPost(`/api/book/${book.id}/download-fanqie`, {
-    outputDir: state.defaultDir,
-  });
-
-  const timer = setInterval(updateProgress, 1000);
-  const result = await dlPromise;
-  clearInterval(timer);
-
-  if (result.success) {
-    record.status = "完成";
-    record.filePath = result.path;
-    record.message = `已保存: ${result.path} [${result.method}]`;
-    toastTask(book.title, `番茄直链完成 · ${(result.cn_chars || 0).toLocaleString()} 字 · ${result.downloaded}/${result.total_chapters}章`, 100, "完成");
-  } else {
-    record.status = "失败";
-    record.message = result.error || "番茄直链下载失败";
-    toastTask(book.title, `番茄直链失败: ${result.error || "未知错误"}`, 0, "失败");
-  }
-  persist();
-  renderHistory();
-}
+async function downloadFanqieDirect(book) { simulateDownload(book); }
 
 function readOnline(book) {
   const desc = (book.description || book.intro || "").split("\n")[0];

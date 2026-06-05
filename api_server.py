@@ -29,6 +29,7 @@ from bridge import (
     cmd_chapters,
     cmd_resolve,
 )
+from task_queue import submit_and_run, get_task, get_all_tasks
 
 try:
     from flask import Flask, request, jsonify, g, make_response
@@ -155,35 +156,37 @@ def chapters(book_id):
 
 @app.route("/api/book/<book_id>/download", methods=["POST"])
 def download(book_id):
+    """异步下载：立即返回任务ID，后台执行。"""
     if rl := _rate_limit(RATE_MAX_DOWNLOAD): return rl
     output_dir = (request.get_json(silent=True) or {}).get("outputDir", "") or None
-    log.info(f"下载请求: book_id={book_id}, dir={output_dir}")
-    try:
-        result = cmd_download(book_id, output_dir)
-        return jsonify(result)
-    except Exception as e:
-        log.exception("下载失败")
-        return jsonify({"success": False, "error": str(e)}), 500
+    task = submit_and_run(book_id, output_dir)
+    log.info(f"异步下载任务: {task['task_id']} book_id={book_id}")
+    return jsonify(task)
 
 
 @app.route("/api/book/<book_id>/download-fanqie", methods=["POST"])
 def download_fanqie(book_id):
+    """异步番茄直链下载。"""
     if rl := _rate_limit(RATE_MAX_DOWNLOAD): return rl
     output_dir = (request.get_json(silent=True) or {}).get("outputDir", "") or None
-    log.info(f"番茄直链下载: book_id={book_id}")
-    try:
-        result = cmd_download_fanqie(book_id, output_dir)
-        if result.get("success") and result.get("path"):
-            try:
-                with open(result["path"], encoding="utf-8") as f:
-                    result["content"] = f.read()
-                    result["content_length"] = len(result["content"])
-            except Exception:
-                pass
-        return jsonify(result)
-    except Exception as e:
-        log.exception("番茄直链下载失败")
-        return jsonify({"success": False, "error": str(e)}), 500
+    task = submit_and_run(book_id, output_dir)
+    log.info(f"异步番茄下载: {task['task_id']} book_id={book_id}")
+    return jsonify(task)
+
+
+@app.route("/api/task/<task_id>")
+def task_status(task_id):
+    """查询任务状态/进度。"""
+    task = get_task(task_id)
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
+    return jsonify(task)
+
+
+@app.route("/api/tasks")
+def task_list():
+    """最近的任务列表。"""
+    return jsonify({"tasks": get_all_tasks()})
 
 
 @app.route("/health")

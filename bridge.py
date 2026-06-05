@@ -446,6 +446,10 @@ def cmd_download(book_id: str, output_dir: str = None) -> dict:
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # 0a. fanqie book_id (15+位) → 直接番茄直链，跳过慢速 ixdzs8
+    if re.match(r"^\d{15,}$", book_id):
+        return cmd_download_fanqie(book_id, output_dir)
+
     # 0. 非数字输入 → 自动解析书名 → book_id
     if not re.match(r"^\d+$", book_id):
         print(f"[bridge] 输入「{book_id}」不是 book_id，自动解析...", file=sys.stderr)
@@ -573,89 +577,41 @@ def _load_font_map() -> dict:
 
 
 def _fetch_chapter_direct(book_id: str, item_id: str) -> str:
-    """获取章节内容（__INITIAL_STATE__ 优先，XPath 回退，验证码检测）。
-
-    ① __INITIAL_STATE__ + PUA 字体映射（完整内容）
-    ② reader 页面 XPath <p> 提取 + charset 解码（回退）
-    ③ /api/reader/full API（最后手段）
-    
-    遇到验证码页面立即返回空（不浪费请求）。
-    """
+    """获取章节。先用 INIT_STATE (含 PUA 映射)，回退 XPath+charset。"""
     cookie = _gen_cookie()
-    headers = {"User-Agent": UA, "Cookie": cookie}
+    headers = {"User-Agent": UA, "Cookie": cookie, "Referer": f"{BASE_FQ}/page/{book_id}"}
 
-    def _is_captcha(html: str) -> bool:
-        return len(html) < 10000 and ("sec_sdk" in html or "captcha" in html.lower())
-
-    # ── 策略 ①：__INITIAL_STATE__ + PUA 字体映射 ──
+    # ① INIT_STATE + PUA
     try:
-        s = requests.Session()
-        s.headers.update(headers)
-        s.headers.update({"Referer": f"{BASE_FQ}/page/{book_id}"})
-        resp = s.get(f"{BASE_FQ}/reader/{book_id}?itemId={item_id}", timeout=30)
+        resp = requests.get(f"{BASE_FQ}/reader/{book_id}?itemId={item_id}", headers=headers, timeout=15)
         html = resp.text
-
-        if _is_captcha(html):
-            return ""  # 验证码，立即放弃
-
         pos = html.find("window.__INITIAL_STATE__=")
         if pos >= 0:
             start = pos + len("window.__INITIAL_STATE__=")
-            try:
-                decoder = json.JSONDecoder()
-                state, _ = decoder.raw_decode(html[start:])
-                content = state.get("reader", {}).get("chapterData", {}).get("content", "")
-                if content and len(content) > 200:
-                    pua_map = _load_font_map()
-                    if pua_map:
-                        decoded = "".join(pua_map.get(c, c) for c in content)
-                    else:
-                        decoded = _decode_charset(content)
-                    decoded = re.sub(r"<br\s*/?>", "\n", decoded, flags=re.I)
-                    decoded = re.sub(r"<[^>]+>", "", decoded)
-                    cn = sum(1 for c in decoded if "\u4e00" <= c <= "\u9fff")
-                    if cn >= 300:
-                        return decoded.strip()
-            except (json.JSONDecodeError, KeyError):
-                pass
+            decoder = json.JSONDecoder()
+            state, _ = decoder.raw_decode(html[start:])
+            content = state.get("reader", {}).get("chapterData", {}).get("content", "")
+            if content and len(content) > 200:
+                pua_map = _load_font_map()
+                if pua_map:
+                    decoded = "".join(pua_map.get(c, c) for c in content)
+                else:
+                    decoded = _decode_charset(content)
+                decoded = re.sub(r"<br\s*/?>", "\n", decoded, flags=re.I)
+                decoded = re.sub(r"<[^>]+>", "", decoded)
+                if sum(1 for c in decoded if "\u4e00" <= c <= "\u9fff") >= 200:
+                    return decoded.strip()
     except Exception:
         pass
 
-    # ── 策略 ②：reader 页面 XPath <p> 提取 ──
+    # ② XPath + charset 回退
     try:
-        s = requests.Session()
-        s.headers.update(headers)
-        resp = s.get(f"{BASE_FQ}/reader/{item_id}", timeout=30)
-        html = resp.text
-        if _is_captcha(html):
-            return ""
-
-        p_matches = re.findall(r'<p[^>]*>([^<]+)</p>', html)
+        resp = requests.get(f"{BASE_FQ}/reader/{item_id}", headers=headers, timeout=15)
+        p_matches = re.findall(r'<p[^>]*>([^<]+)</p>', resp.text)
         if p_matches and len(p_matches) > 5:
             content = "\n".join(p_matches)
             decoded = _decode_charset(content)
-            cn = sum(1 for c in (decoded or "") if "\u4e00" <= c <= "\u9fff")
-            if cn >= 300:
-                return decoded.strip()
-    except Exception:
-        pass
-
-    # ── 策略 ③：/api/reader/full API ──
-    try:
-        s = requests.Session()
-        s.headers.update(headers)
-        resp = s.get(f"{FQ_READER_API}?itemId={item_id}", timeout=30)
-        if _is_captcha(resp.text):
-            return ""
-        data = resp.json()
-        content = data.get("data", {}).get("chapterData", {}).get("content", "")
-        if content and len(content) > 200:
-            pua_map = _load_font_map()
-            decoded = "".join(pua_map.get(c, c) for c in content) if pua_map else content
-            decoded = re.sub(r"<br\s*/?>", "\n", decoded, flags=re.I)
-            decoded = re.sub(r"<[^>]+>", "", decoded)
-            cn = sum(1 for c in decoded if "\u4e00" <= c <= "\u9fff")
-            if cn >= 300:
+            if sum(1 for c in (decoded or "") if "\u4e00" <= c <= "\u9fff") >= 200:
                 return decoded.strip()
     except Exception:
         pass
@@ -700,12 +656,12 @@ def cmd_download_fanqie(book_id: str, output_dir: str = None) -> dict:
     safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)
     output_path = os.path.join(output_dir, f"{safe_title}.txt")
 
-    # 2. 下载章节（单线程安全模式，需要速度可调 MAX_WORKERS）
-    MAX_WORKERS = 1  # 1=最安全 2=快 3+=可能触发验证码
+    # 2. 下载章节（ying-ck 方案：16线程，50-150ms延迟）
+    MAX_WORKERS = 2   # 2线程并行，避免触发风控
     success_count = 0
     failed_items = []
     start_time = time.time()
-    results = {}  # {index: (title, content)}
+    results = {}
 
     print(f"[fanqie] 并行下载《{title}》{len(chapters)}章 ({MAX_WORKERS}线程) → {output_path}", file=sys.stderr)
 
@@ -713,8 +669,7 @@ def cmd_download_fanqie(book_id: str, output_dir: str = None) -> dict:
         idx, ch = idx_ch
         item_id = ch.get("item_id", "")
         ch_title = ch.get("title", f"第{idx+1}章")
-        # 随机延迟 0.3-1.5s 避免并发撞风控
-        time.sleep(random.uniform(0.3, 1.5))
+        time.sleep(random.uniform(0.05, 0.15))  # 50-150ms
         content = _fetch_chapter_direct(book_id, item_id)
         return idx, ch_title, content
 
