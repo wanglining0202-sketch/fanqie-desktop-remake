@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+_debug*.py
+downloads/
+node_modules/
+.git/
+*.log

@@ -1,0 +1,20 @@
+# ── 番茄小说 API 代理 — Docker Compose 部署 ──
+# 用法: docker compose up -d
+# 然后在 fanqie-desktop-remake 设置 REMOTE_API=http://你的服务器IP:8080
+
+version: "3.8"
+
+services:
+  fanqie-api:
+    build: .
+    container_name: fanqie-api
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./downloads:/app/downloads
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

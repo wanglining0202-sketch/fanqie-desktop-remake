@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>番茄小说下载器</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="titlebar">
+        <div class="window-brand">
+          <span class="mini-logo">🍅</span>
+          <span>番茄小说下载器</span>
+        </div>
+        <div class="window-actions" aria-label="窗口按钮">
+          <button class="icon-button" type="button" title="最小化">－</button>
+          <button class="icon-button" type="button" title="关闭">×</button>
+        </div>
+      </header>
+
+      <section class="hero-panel">
+        <div class="brand-lockup">
+          <div class="app-logo">🍅</div>
+          <h1>番茄小说下载器</h1>
+        </div>
+        <aside class="version-card">
+          <div>
+            <span>当前版本</span>
+            <strong>v2026.06.03.1439</strong>
+            <div class="meter"><i></i></div>
+          </div>
+          <button class="icon-button moon" type="button" title="切换主题">●</button>
+        </aside>
+      </section>
+
+      <nav class="tabs" aria-label="主导航">
+        <button class="tab is-active" type="button" data-tab="search">⌕ <span>搜索</span></button>
+        <button class="tab" type="button" data-tab="shelf">▣ <span>书架</span></button>
+        <button class="tab" type="button" data-tab="history">◴ <span>历史</span></button>
+        <button class="tab" type="button" data-tab="settings">⚙ <span>设置</span></button>
+      </nav>
+
+      <section class="view is-active" id="view-search">
+        <div class="split-layout">
+          <section class="panel search-panel">
+            <h2>搜索</h2>
+            <p>关键词、链接或书籍编号</p>
+            <form class="search-row" id="searchForm">
+              <input id="searchInput" autocomplete="off" value="7627137196947950616" />
+              <button class="primary" type="submit">搜索</button>
+              <button class="ghost" type="button" id="loadButton">载入</button>
+            </form>
+            <div class="result-count">共找到 <strong id="resultCount">1</strong> 条结果</div>
+            <div class="result-list" id="resultList"></div>
+          </section>
+
+          <section class="panel detail-panel">
+            <h2>详情</h2>
+            <p>查看信息并发起下载或阅读</p>
+            <article class="book-detail" id="bookDetail"></article>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-shelf">
+        <section class="panel wide-panel">
+          <h2>书架</h2>
+          <p>点击封面直接阅读，详情用于管理缓存与下载</p>
+          <div class="shelf-grid" id="shelfGrid">
+            <div class="empty-box">书架为空。搜索书籍后<br />可添加到书架。</div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-history">
+        <section class="panel wide-panel history-panel">
+          <div class="panel-head">
+            <div>
+              <h2>历史</h2>
+              <p>本地下载记录</p>
+            </div>
+            <div class="head-actions">
+              <button class="ghost" type="button" id="refreshHistory">刷新</button>
+              <button class="danger" type="button" id="clearHistory">清空</button>
+            </div>
+          </div>
+          <input class="filter-input" id="historyFilter" placeholder="筛选书名、作者或路径" />
+          <div class="stats">
+            <div><span>历史记录</span><strong id="statHistory">0</strong></div>
+            <div><span>当前任务</span><strong id="statTasks">0</strong></div>
+            <div><span>文件仍存在</span><strong id="statExists">0</strong></div>
+            <div><span>文件缺失</span><strong id="statMissing">0</strong></div>
+          </div>
+          <div class="history-table" id="historyTable"></div>
+        </section>
+      </section>
+
+      <section class="view" id="view-settings">
+        <section class="panel wide-panel settings-panel">
+          <div class="panel-head">
+            <div>
+              <h2>设置</h2>
+              <p>全局默认下载选项</p>
+            </div>
+            <button class="primary" type="button" id="saveSettings">保存设置</button>
+          </div>
+          <div class="settings-card">
+            <label>默认保存目录</label>
+            <div class="path-row">
+              <button class="ghost" type="button" id="chooseDefaultDir">选择目录</button>
+              <input id="defaultDir" value="C:\Users\HONGLU ENG 10\Downloads\FanqieNovels" />
+            </div>
+            <label>默认导出格式</label>
+            <div class="segmented" data-setting="format">
+              <button class="segment is-active" type="button" data-format="TXT">TXT</button>
+              <button class="segment" type="button" data-format="EPUB">EPUB</button>
+            </div>
+          </div>
+          <div class="settings-card">
+            <label>单次请求章节数</label>
+            <div class="range-row">
+              <input id="chapterRange" type="range" min="1" max="20" value="6" />
+              <output id="chapterOutput">6</output>
+            </div>
+            <p>范围 1-20，默认 6。数值越大请求越少，但失败时重试成本更高。</p>
+            <label class="check-row"><input id="diagnostics" type="checkbox" /> 启用安全诊断日志</label>
+            <p>默认关闭。开启后日志保存在程序目录的 .log 文件夹，接口地址、参数、签名、Cookie、书籍/章节 ID 均会脱敏。</p>
+          </div>
+        </section>
+      </section>
+
+      <aside class="task-dock" id="taskDock">
+        <button class="dock-toggle" type="button" id="dockToggle">‹</button>
+        <div class="task-card">
+          <div class="task-top">
+            <strong id="taskTitle">暂无任务</strong>
+            <span id="taskStatus">等待</span>
+          </div>
+          <p id="taskMessage">选择一本书后开始下载</p>
+          <div class="progress"><i id="taskProgress"></i></div>
+          <small id="taskPercent">进度 0%</small>
+        </div>
+      </aside>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
