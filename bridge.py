@@ -51,8 +51,9 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 BASE_FQ = "https://fanqienovel.com"
 BASE_IX = "https://ixdzs8.com"
 BASE_DOWN = "https://down7.ixdzs8.com"
+FQ_PROXY = "https://tt.sjmyzq.cn/api/raw_full"  # 第三方公开代理，无风控
 
-# ── 移动端 API（来源：ying-ck/fanqienovel-downloader，绕过 PC 端验证码）──
+# ── 移动端 API（来源：ying-ck/fanqienovel-downloader）──
 FQ_MOBILE_API = "https://api5-normal-lf.fqnovel.com"
 FQ_READER_API = f"{BASE_FQ}/api/reader/full"  # 备选章节 API
 CHARSET_URL = "https://raw.githubusercontent.com/ying-ck/fanqienovel-downloader/main/src/charset.json"
@@ -536,19 +537,35 @@ def _load_font_map() -> dict:
 
 
 def _fetch_chapter_direct(book_id: str, item_id: str) -> str:
-    """获取章节。INIT_STATE+PUA → XPath+charset → 403退避重试。"""
+    """四源获取章节。代理API → INIT_STATE → XPath → 退避重试。"""
+    
+    # ① 第三方代理 API（最快，无风控，已解码）
+    try:
+        resp = requests.get(f"{FQ_PROXY}?item_id={item_id}", timeout=15)
+        data = resp.json()
+        if data.get("code") == 200:
+            content = data["data"].get("content", "")
+            if content:
+                # 清理 HTML 标签
+                text = re.sub(r'<[^>]+>', '', content)
+                text = text.replace('\\n', '\n').replace('\\t', ' ')
+                text = re.sub(r'\n{3,}', '\n\n', text)
+                if sum(1 for c in text if "\u4e00" <= c <= "\u9fff") >= 200:
+                    return text.strip()
+    except Exception:
+        pass
+    
+    # ② INIT_STATE + PUA（回退）
     cookie = _gen_cookie()
     headers = {"User-Agent": UA, "Cookie": cookie, "Referer": f"{BASE_FQ}/page/{book_id}"}
 
     for attempt in range(3):
-        # ① INIT_STATE + PUA
         try:
             resp = requests.get(f"{BASE_FQ}/reader/{book_id}?itemId={item_id}", headers=headers, timeout=15)
             html = resp.text
             
-            # 403/验证码 → 退避重试
             if len(html) < 10000 and ("sec_sdk" in html or resp.status_code == 403):
-                time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                time.sleep(2 ** attempt)
                 continue
             
             pos = html.find("window.__INITIAL_STATE__=")
@@ -559,10 +576,7 @@ def _fetch_chapter_direct(book_id: str, item_id: str) -> str:
                 content = state.get("reader", {}).get("chapterData", {}).get("content", "")
                 if content and len(content) > 200:
                     pua_map = _load_font_map()
-                    if pua_map:
-                        decoded = "".join(pua_map.get(c, c) for c in content)
-                    else:
-                        decoded = _decode_charset(content)
+                    decoded = "".join(pua_map.get(c, c) for c in content) if pua_map else _decode_charset(content)
                     decoded = re.sub(r"<br\s*/?>", "\n", decoded, flags=re.I)
                     decoded = re.sub(r"<[^>]+>", "", decoded)
                     if sum(1 for c in decoded if "\u4e00" <= c <= "\u9fff") >= 200:
@@ -570,7 +584,7 @@ def _fetch_chapter_direct(book_id: str, item_id: str) -> str:
         except Exception:
             pass
         
-        # ② XPath + charset 回退
+        # ③ XPath + charset
         try:
             resp = requests.get(f"{BASE_FQ}/reader/{item_id}", headers=headers, timeout=15)
             p_matches = re.findall(r'<p[^>]*>([^<]+)</p>', resp.text)
@@ -625,7 +639,7 @@ def cmd_download_fanqie(book_id: str, output_dir: str = None) -> dict:
     output_path = os.path.join(output_dir, f"{safe_title}.txt")
 
     # 2. 下载章节（ying-ck 方案：16线程，50-150ms延迟）
-    MAX_WORKERS = 2   # 2线程并行，避免触发风控
+    MAX_WORKERS = 16  # 代理API无风控，16线程极速
     success_count = 0
     failed_items = []
     start_time = time.time()
