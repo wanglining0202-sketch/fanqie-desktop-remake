@@ -330,6 +330,42 @@ def cmd_info(book_id: str) -> dict:
     except Exception:
         pass
 
+    # 1b. HTML 没章节 → 目录 API（zhongbai2333 方案）
+    if not chapters:
+        try:
+            dir_url = f"{BASE_FQ}/api/reader/directory/detail?bookId={book_id}"
+            resp = requests.get(dir_url, headers={"User-Agent": UA}, timeout=15)
+            data = resp.json()
+            # 支持 chapterList / chapterListWithVolume / data.chapterList 等多种格式
+            chapter_list = None
+            for key in ["chapterList", "data"]:
+                val = data.get(key, {})
+                if isinstance(val, dict):
+                    for sub in ["chapterList", "chapters", "items", "list"]:
+                        if sub in val:
+                            chapter_list = val[sub]
+                            break
+                elif isinstance(val, list):
+                    chapter_list = val
+                if chapter_list:
+                    break
+            # 展平 chapterListWithVolume
+            if not chapter_list and "chapterListWithVolume" in data:
+                chapter_list = []
+                for vol in data["chapterListWithVolume"]:
+                    chapter_list.extend(vol if isinstance(vol, list) else vol.get("chapterList", vol.get("chapters", [])))
+            
+            if isinstance(chapter_list, list):
+                for ch in chapter_list:
+                    if isinstance(ch, dict):
+                        chapters.append({
+                            "item_id": str(ch.get("itemId", ch.get("item_id", ch.get("id", "")))),
+                            "title": ch.get("title", ""),
+                            "need_pay": False,
+                        })
+        except Exception:
+            pass
+
     # 2. 尝试 ixdzs8 信息页
     try:
         url = f"{BASE_IX}/read/{book_id}/"
@@ -500,44 +536,53 @@ def _load_font_map() -> dict:
 
 
 def _fetch_chapter_direct(book_id: str, item_id: str) -> str:
-    """获取章节。先用 INIT_STATE (含 PUA 映射)，回退 XPath+charset。"""
+    """获取章节。INIT_STATE+PUA → XPath+charset → 403退避重试。"""
     cookie = _gen_cookie()
     headers = {"User-Agent": UA, "Cookie": cookie, "Referer": f"{BASE_FQ}/page/{book_id}"}
 
-    # ① INIT_STATE + PUA
-    try:
-        resp = requests.get(f"{BASE_FQ}/reader/{book_id}?itemId={item_id}", headers=headers, timeout=15)
-        html = resp.text
-        pos = html.find("window.__INITIAL_STATE__=")
-        if pos >= 0:
-            start = pos + len("window.__INITIAL_STATE__=")
-            decoder = json.JSONDecoder()
-            state, _ = decoder.raw_decode(html[start:])
-            content = state.get("reader", {}).get("chapterData", {}).get("content", "")
-            if content and len(content) > 200:
-                pua_map = _load_font_map()
-                if pua_map:
-                    decoded = "".join(pua_map.get(c, c) for c in content)
-                else:
-                    decoded = _decode_charset(content)
-                decoded = re.sub(r"<br\s*/?>", "\n", decoded, flags=re.I)
-                decoded = re.sub(r"<[^>]+>", "", decoded)
-                if sum(1 for c in decoded if "\u4e00" <= c <= "\u9fff") >= 200:
+    for attempt in range(3):
+        # ① INIT_STATE + PUA
+        try:
+            resp = requests.get(f"{BASE_FQ}/reader/{book_id}?itemId={item_id}", headers=headers, timeout=15)
+            html = resp.text
+            
+            # 403/验证码 → 退避重试
+            if len(html) < 10000 and ("sec_sdk" in html or resp.status_code == 403):
+                time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                continue
+            
+            pos = html.find("window.__INITIAL_STATE__=")
+            if pos >= 0:
+                start = pos + len("window.__INITIAL_STATE__=")
+                decoder = json.JSONDecoder()
+                state, _ = decoder.raw_decode(html[start:])
+                content = state.get("reader", {}).get("chapterData", {}).get("content", "")
+                if content and len(content) > 200:
+                    pua_map = _load_font_map()
+                    if pua_map:
+                        decoded = "".join(pua_map.get(c, c) for c in content)
+                    else:
+                        decoded = _decode_charset(content)
+                    decoded = re.sub(r"<br\s*/?>", "\n", decoded, flags=re.I)
+                    decoded = re.sub(r"<[^>]+>", "", decoded)
+                    if sum(1 for c in decoded if "\u4e00" <= c <= "\u9fff") >= 200:
+                        return decoded.strip()
+        except Exception:
+            pass
+        
+        # ② XPath + charset 回退
+        try:
+            resp = requests.get(f"{BASE_FQ}/reader/{item_id}", headers=headers, timeout=15)
+            p_matches = re.findall(r'<p[^>]*>([^<]+)</p>', resp.text)
+            if p_matches and len(p_matches) > 5:
+                content = "\n".join(p_matches)
+                decoded = _decode_charset(content)
+                if sum(1 for c in (decoded or "") if "\u4e00" <= c <= "\u9fff") >= 200:
                     return decoded.strip()
-    except Exception:
-        pass
-
-    # ② XPath + charset 回退
-    try:
-        resp = requests.get(f"{BASE_FQ}/reader/{item_id}", headers=headers, timeout=15)
-        p_matches = re.findall(r'<p[^>]*>([^<]+)</p>', resp.text)
-        if p_matches and len(p_matches) > 5:
-            content = "\n".join(p_matches)
-            decoded = _decode_charset(content)
-            if sum(1 for c in (decoded or "") if "\u4e00" <= c <= "\u9fff") >= 200:
-                return decoded.strip()
-    except Exception:
-        pass
+        except Exception:
+            pass
+        
+        time.sleep(0.5)
 
     return ""
 
