@@ -622,7 +622,43 @@ async function simulateDownload(book) {
   }, 2000);
 }
 
-async function downloadFanqieDirect(book) { simulateDownload(book); }
+async function downloadFanqieDirect(book) {
+  const record = {
+    id: book.id, title: book.title, author: book.author,
+    format: state.format,
+    time: new Date().toLocaleString("zh-CN", { hour12: false }),
+    status: "下载中", message: "代理API下载中...",
+  };
+  state.history.unshift(record);
+  renderHistory();
+  toastTask(book.title, "代理API极速下载中...", 10, "下载中");
+
+  try {
+    const result = await apiPost(`/api/book/${book.id}/download-fanqie`, { outputDir: state.defaultDir });
+
+    if (result.error) {
+      record.status = "失败";
+      record.message = result.error;
+      toastTask(book.title, result.error, 0, "失败");
+    } else if (result.success) {
+      record.status = "完成";
+      record.filePath = result.path;
+      record.message = `已保存: ${result.path || ""} [${result.downloaded || "?"}/${result.total_chapters || "?"}章 · ${((result.cn_chars || 0) / 10000).toFixed(1)}万字 · ${result.elapsed_seconds || "?"}s]`;
+      toastTask(book.title, `下载完成 · ${(result.cn_chars || 0).toLocaleString()} 字 · ${result.elapsed_seconds || "?"}s`, 100, "完成");
+    } else {
+      record.status = "失败";
+      record.message = "下载返回异常";
+      toastTask(book.title, "下载返回异常", 0, "失败");
+    }
+  } catch (e) {
+    record.status = "失败";
+    record.message = `请求失败: ${e.message}`;
+    toastTask(book.title, `请求失败: ${e.message}`, 0, "失败");
+  }
+
+  persist();
+  renderHistory();
+}
 
 function readOnline(book) {
   const desc = (book.description || book.intro || "").split("\n")[0];
