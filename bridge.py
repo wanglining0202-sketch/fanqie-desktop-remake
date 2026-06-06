@@ -437,127 +437,50 @@ def cmd_rank(category_id: str = "10", page: int = 1) -> dict:
 
 
 def cmd_download(book_id: str, output_dir: str = None) -> dict:
-    """通过 ixdzs8 ZIP 下载整本小说。自动交叉引用 番茄/ixdzs8 ID 体系。
-
-    如果 book_id 不是纯数字，自动调用 cmd_resolve 解析书名。
-    """
+    """三源下载：ixdzs8 ZIP 优先 → 番茄移动端 → 番茄 web 直链回退。"""
     if output_dir is None:
         output_dir = str(pathlib.Path.home() / "Downloads" / "FanqieNovels")
-
     os.makedirs(output_dir, exist_ok=True)
 
-    # 0a. fanqie book_id (15+位) → 直接番茄直链，跳过慢速 ixdzs8
-    if re.match(r"^\d{15,}$", book_id):
-        return cmd_download_fanqie(book_id, output_dir)
-
-    # 0. 非数字输入 → 自动解析书名 → book_id
+    # 0. 非数字 → 解析书名
     if not re.match(r"^\d+$", book_id):
-        print(f"[bridge] 输入「{book_id}」不是 book_id，自动解析...", file=sys.stderr)
         resolved = cmd_resolve(book_id)
         if not resolved.get("found"):
             return {"success": False, "error": resolved.get("error", f"无法解析「{book_id}」")}
-
-        # 取最佳结果
-        best = resolved.get("best", resolved.get("results", [{}])[0])
-        book_id = best["book_id"]
-        print(f"[bridge] 解析到: {best.get('title')} / {book_id} / {best.get('source')}", file=sys.stderr)
-
-        # 如果是 ixdzs8 源，优先走 ZIP
+        best = resolved.get("best", {})
+        book_id = best.get("book_id", book_id)
         if best.get("download_method") == "ixdzs8_zip":
             result = _try_download_zip(book_id, best.get("title", book_id), output_dir)
             if result["success"]:
                 return result
-            # ZIP 失败 → 回退 番茄直链
-            print(f"[bridge] ixdzs8 ZIP 失败，回退番茄直链...", file=sys.stderr)
-        # 番茄源或 ZIP 失败 → fanqie_direct
-        if best.get("source") == "fanqie" or True:
-            return cmd_download_fanqie(book_id, output_dir)
+        return cmd_download_fanqie(book_id, output_dir)
 
-    # 1. 获取书籍信息（优先 番茄，回退 ixdzs8）
+    # 1. 获取书名 → ixdzs8 交叉搜索 → 优先 ZIP（秒级，不触发风控）
     info = cmd_info(book_id)
     title = info.get("title", "")
     author = info.get("author", "")
 
-    # 2. 尝试直接 ixdzs8 ZIP 下载
-    result = _try_download_zip(book_id, title, output_dir)
-    if result["success"]:
-        return result
-
-    # 3. 直接下载失败 → 用书名+作者交叉搜索 ixdzs8 找对应 ID
     if title:
-        search_term = f"{title} {author}".strip()
-        search_results = ixdzs8_search(search_term, limit=5)
-
-        for sr in search_results:
-            if "error" in sr:
+        # 搜索 ixdzs8，找同名书
+        ix_results = ixdzs8_search(f"{title} {author}".strip(), limit=5)
+        for r in ix_results:
+            if "error" in r:
                 continue
-            ix_id = sr.get("book_id", "")
-            sr_title = sr.get("title", "")
-            if not ix_id or ix_id == book_id:
-                continue
-
-            # 标题相似度检查（简单包含匹配）
-            title_clean = re.sub(r"[（）\(\)\s]", "", title)
-            sr_clean = re.sub(r"[（）\(\)\s]", "", sr_title)
-            if title_clean in sr_clean or sr_clean in title_clean:
-                result = _try_download_zip(ix_id, title, output_dir)
+            r_title = re.sub(r"[（）()\s]", "", r.get("title", ""))
+            t_clean = re.sub(r"[（）()\s]", "", title)
+            # 标题匹配
+            if r_title == t_clean or t_clean in r_title or r_title in t_clean:
+                print(f"[bridge] ixdzs8 匹配: {r['title']} (id={r['book_id']})", file=sys.stderr)
+                result = _try_download_zip(r["book_id"], title, output_dir)
                 if result["success"]:
-                    result["cross_ref"] = True
-                    result["ixdzs8_book_id"] = ix_id
                     return result
+                break  # 匹配到了但ZIP失败，不再试其他
 
-        # 宽松匹配：只要搜索到同作者的书就试
-        for sr in search_results:
-            if "error" in sr:
-                continue
-            ix_id = sr.get("book_id", "")
-            sr_author = sr.get("author", "")
-            if ix_id and ix_id != book_id and sr_author and author and sr_author == author:
-                result = _try_download_zip(ix_id, title, output_dir)
-                if result["success"]:
-                    result["cross_ref"] = True
-                    result["ixdzs8_book_id"] = ix_id
-                    return result
-
-    # 4. 全部失败
-    if not title:
-        title = book_id
-    safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)
-
-    # 最后尝试 fallback 下载（book_id 可能是 ixdzs8 格式但 first attempt 网络问题）
-    zip_url = f"{BASE_DOWN}/{book_id}.zip"
-    try:
-        resp = safe_get(zip_url)
-        if resp.status_code == 200 and len(resp.content) > 1000:
-            return _extract_zip(resp.content, safe_title, output_dir)
-    except Exception:
-        pass
-
-    # 4. ixdzs8 完全失败 → 自动回退 tomatox API（番茄原站）
-    if info.get("source") == "fanqie" and info.get("chapters"):
-        print(f"[bridge] ixdzs8 无此书，切换到 tomatox API 逐章下载...", file=sys.stderr)
-        result = cmd_download_fanqie(book_id, output_dir)
-        if result["success"]:
-            return result
-        # tomatox 也失败 → 汇总所有尝试
-        return {
-            "success": False,
-            "title": title,
-            "error": "所有下载路径均失败",
-            "attempts": {
-                "ixdzs8_zip": "403 (ID体系不同，非 ixdzs8 book_id)",
-                "ixdzs8_search": "未找到匹配书籍",
-                "tomatox_api": "API 不可达 (api-b.tomatox.com 被墙)",
-            },
-            "suggestion": "在 ixdzs8 搜索框输入书名查找 ixdzs8 版本下载，或用 download_fanqie 命令强制走番茄直链（可能触发验证码）",
-        }
-
-    if not title:
-        title = book_id
-    return {"success": False, "error": f"未找到「{title}」的下载源。ixdzs8 和 tomatox 均不可用。"}
+    # 2. ixdzs8 没有 → 番茄直链
+    return cmd_download_fanqie(book_id, output_dir)
 
 
-# ── 番茄原站下载（独立请求 + PUA 字体解密，避免 Session cookie 触发验证码） ──
+# ── 番茄原站下载（独立请求 + PUA 字体解密） ──
 
 # 字体映射表（延迟加载）
 _font_map = None
